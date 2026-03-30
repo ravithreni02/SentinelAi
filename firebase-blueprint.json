@@ -10,6 +10,7 @@
         "category": { "type": "string", "description": "Category (e.g., Suspect, Missing Person)" },
         "last_seen": { "type": "string", "description": "Last known location or time" },
         "description": { "type": "string", "description": "Physical description or notes" },
+        "image_data": { "type": "string", "description": "Base64 encoded image of the suspect" },
         "image_url": { "type": "string", "description": "URL to the suspect's image" },
         "status": { "type": "string", "enum": ["Active", "Inactive"] },
         "uid": { "type": "string", "description": "Owner UID" }

@@ -62,6 +62,7 @@ interface Suspect {
   category: string;
   description: string;
   status: string;
+  image_data?: string; // Base64 image data
 }
 
 interface Alert {
@@ -154,7 +155,8 @@ function SentinelApp() {
     risk_level: 'Low' as any,
     category: 'Suspect',
     description: '',
-    status: 'Active'
+    status: 'Active',
+    image_data: ''
   });
 
   const [signupFormData, setSignupFormData] = useState({
@@ -272,9 +274,20 @@ function SentinelApp() {
       
       setShowSuspectModal(false);
       setEditingSuspect(null);
-      setSuspectFormData({ name: '', risk_level: 'Low', category: 'Suspect', description: '', status: 'Active' });
+      setSuspectFormData({ name: '', risk_level: 'Low', category: 'Suspect', description: '', status: 'Active', image_data: '' });
     } catch (err) {
       handleFirestoreError(err, 'write', 'suspects');
+    }
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSuspectFormData(prev => ({ ...prev, image_data: reader.result as string }));
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -438,19 +451,32 @@ Please add it to your Firebase project's "Authorized domains" list in the Authen
             setIsAnalyzing(true);
             try {
               const result = await analyzeFrame(base64, suspects);
+              
+              // Sanity check: If no faces are detected, it cannot be a suspect match
+              if (result.faces.length === 0) {
+                result.isSuspectMatch = false;
+                result.suspectId = undefined;
+              }
+              
               setLastAnalysis(result);
 
               if (result.isSuspectMatch || result.isSuspicious) {
+                const matchedSuspect = suspects.find(s => s.id === result.suspectId?.toString());
+                
+                // Only create a match alert if the suspect actually exists in our database
+                if (result.isSuspectMatch && !matchedSuspect) {
+                  console.warn("AI reported a suspect match but the ID was not found in the database:", result.suspectId);
+                  return;
+                }
+
                 const locations = ['Main Entrance', 'North Corridor', 'Parking Lot B', 'Loading Dock', 'Server Room Hallway'];
                 const randomLocation = locations[Math.floor(Math.random() * locations.length)];
                 
-                const matchedSuspect = suspects.find(s => s.id === result.suspectId?.toString());
-
                 const newAlert = {
                   timestamp: Timestamp.now(),
                   camera_id: `CAM-0${Math.floor(Math.random() * 5) + 1}`,
                   location: randomLocation,
-                  suspect_id: result.suspectId?.toString() || null,
+                  suspect_id: matchedSuspect?.id || null,
                   suspect_name: matchedSuspect?.name || null,
                   risk_level: matchedSuspect?.risk_level || (result.isSuspicious ? 'Medium' : 'Low'),
                   confidence: result.confidence,
@@ -978,7 +1004,8 @@ Please add it to your Firebase project's "Authorized domains" list in the Authen
                               risk_level: suspect.risk_level,
                               category: suspect.category,
                               description: suspect.description,
-                              status: suspect.status
+                              status: suspect.status,
+                              image_data: suspect.image_data || ''
                             });
                             setShowSuspectModal(true);
                           }}
@@ -995,7 +1022,7 @@ Please add it to your Firebase project's "Authorized domains" list in the Authen
                       </div>
                       <div className="aspect-square bg-zinc-800 relative">
                         <img 
-                          src={`https://picsum.photos/seed/${suspect.id}/400/400`} 
+                          src={suspect.image_data || `https://picsum.photos/seed/${suspect.id}/400/400`} 
                           alt={suspect.name} 
                           className="w-full h-full object-cover grayscale opacity-50 group-hover:opacity-80 transition-opacity"
                           referrerPolicy="no-referrer"
@@ -1304,6 +1331,34 @@ Please add it to your Firebase project's "Authorized domains" list in the Authen
               </div>
               <div className="p-6">
                 <form onSubmit={handleSuspectSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Suspect Image</label>
+                    <div className="flex items-center gap-4 mb-4">
+                      <div className="w-20 h-20 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-center overflow-hidden">
+                        {suspectFormData.image_data ? (
+                          <img src={suspectFormData.image_data} alt="Preview" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <Camera className="text-zinc-700" size={24} />
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <input 
+                          type="file" 
+                          accept="image/*"
+                          onChange={handleImageUpload}
+                          className="hidden" 
+                          id="suspect-image-upload"
+                        />
+                        <label 
+                          htmlFor="suspect-image-upload"
+                          className="px-4 py-2 bg-zinc-800 text-zinc-300 rounded-lg text-xs font-bold hover:bg-zinc-700 cursor-pointer transition-colors inline-block"
+                        >
+                          Upload Photo
+                        </label>
+                        <p className="text-[10px] text-zinc-600 mt-1">JPG, PNG or GIF. Max 1MB.</p>
+                      </div>
+                    </div>
+                  </div>
                   <div>
                     <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Full Name</label>
                     <input 

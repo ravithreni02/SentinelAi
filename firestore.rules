@@ -55,7 +55,8 @@ service cloud.firestore {
       return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              data.risk_level in ['Low', 'Medium', 'High', 'Critical'] &&
              data.category is string &&
-             (!('status' in data) || data.status in ['Active', 'Inactive']);
+             (!('status' in data) || data.status in ['Active', 'Inactive']) &&
+             (!('image_data' in data) || (data.image_data is string && data.image_data.size() < 1000000));
     }
 
     function isValidAlert(data) {
@@ -73,8 +74,8 @@ service cloud.firestore {
     function isValidSignup(data) {
       return data.name is string && data.name.size() > 0 &&
              data.email is string &&
-             data.region is string &&
-             data.experience is string &&
+             data.post is string &&
+             data.role is string &&
              data.status in ['pending', 'approved', 'rejected'] &&
              data.timestamp is timestamp;
     }
