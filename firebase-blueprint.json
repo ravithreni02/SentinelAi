@@ -1,0 +1,97 @@
+{
+  "entities": {
+    "Suspect": {
+      "title": "Suspect",
+      "description": "A person of interest in the surveillance system.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full name of the suspect" },
+        "risk_level": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "category": { "type": "string", "description": "Category (e.g., Suspect, Missing Person)" },
+        "last_seen": { "type": "string", "description": "Last known location or time" },
+        "description": { "type": "string", "description": "Physical description or notes" },
+        "image_url": { "type": "string", "description": "URL to the suspect's image" },
+        "status": { "type": "string", "enum": ["Active", "Inactive"] },
+        "uid": { "type": "string", "description": "Owner UID" }
+      },
+      "required": ["name", "risk_level", "category"]
+    },
+    "Alert": {
+      "title": "Alert",
+      "description": "A real-time detection alert.",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "camera_id": { "type": "string" },
+        "location": { "type": "string" },
+        "suspect_id": { "type": "string", "description": "Document ID of the matched suspect" },
+        "suspect_name": { "type": "string" },
+        "risk_level": { "type": "string" },
+        "confidence": { "type": "number" },
+        "behavior_flag": { "type": "string" },
+        "status": { "type": "string", "enum": ["Pending", "Resolved"] }
+      },
+      "required": ["timestamp", "camera_id", "location"]
+    },
+    "AuditLog": {
+      "title": "Audit Log",
+      "description": "System audit logs.",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "user": { "type": "string" },
+        "action": { "type": "string" },
+        "details": { "type": "string" }
+      },
+      "required": ["timestamp", "user", "action"]
+    },
+    "AgentSignup": {
+      "title": "Agent Signup",
+      "description": "Agent applications.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "post": { "type": "string" },
+        "role": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "email", "post", "role", "status", "timestamp"]
+    },
+    "ContactMessage": {
+      "title": "Contact Message",
+      "description": "Contact form submissions.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "message": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "email", "message", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/suspects/{suspectId}": {
+      "schema": "Suspect",
+      "description": "Collection of suspects"
+    },
+    "/alerts/{alertId}": {
+      "schema": "Alert",
+      "description": "Collection of alerts"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Collection of audit logs"
+    },
+    "/agent_signups/{signupId}": {
+      "schema": "AgentSignup",
+      "description": "Collection of agent applications"
+    },
+    "/contact_messages/{messageId}": {
+      "schema": "ContactMessage",
+      "description": "Collection of contact messages"
+    }
+  }
+}

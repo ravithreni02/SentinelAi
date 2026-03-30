@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import * as React from 'react';
+import { useState, useEffect, useRef, Component } from 'react';
 import { 
   Shield, 
   Camera, 
@@ -22,18 +23,40 @@ import {
   History,
   ShieldCheck,
   Plus,
+  Minus,
   Edit,
   Trash2,
   Mail,
   UserPlus,
-  X
+  X,
+  LogIn,
+  LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeFrame, AnalysisResult } from './services/gemini';
+import { 
+  db, 
+  auth, 
+  googleProvider, 
+  signInWithPopup, 
+  onAuthStateChanged, 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  limit,
+  Timestamp,
+  serverTimestamp,
+  User
+} from './firebase';
 
 // --- Types ---
 interface Suspect {
-  id: number;
+  id: string;
   name: string;
   risk_level: 'Low' | 'Medium' | 'High' | 'Critical';
   category: string;
@@ -42,16 +65,34 @@ interface Suspect {
 }
 
 interface Alert {
-  id: number;
-  timestamp: string;
+  id: string;
+  timestamp: any;
   camera_id: string;
   location: string;
-  suspect_id: number;
+  suspect_id: string | null;
   suspect_name?: string;
   risk_level?: string;
   confidence: number;
   behavior_flag: string;
   status: string;
+}
+
+interface MapPoint {
+  id: string;
+  x: number;
+  y: number;
+  type: 'camera' | 'unit' | 'alert';
+  label: string;
+  status: 'active' | 'idle' | 'warning' | 'critical';
+}
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
 }
 
 // --- Components ---
@@ -83,14 +124,23 @@ const StatusBadge = ({ level }: { level: string }) => {
 };
 
 export default function App() {
+  return (
+    <SentinelApp />
+  );
+}
+
+function SentinelApp() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'suspects' | 'alerts' | 'map' | 'mobile'>('dashboard');
   const [isPrivacyMode, setIsPrivacyMode] = useState(true);
   const [suspects, setSuspects] = useState<Suspect[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [mapPoints, setMapPoints] = useState<MapPoint[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [lastAnalysis, setLastAnalysis] = useState<AnalysisResult | null>(null);
   
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   
   // Modals State
   const [showSignup, setShowSignup] = useState(false);
@@ -101,7 +151,7 @@ export default function App() {
   
   const [suspectFormData, setSuspectFormData] = useState({
     name: '',
-    risk_level: 'Low',
+    risk_level: 'Low' as any,
     category: 'Suspect',
     description: '',
     status: 'Active'
@@ -124,25 +174,28 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
 
+  const handleFirestoreError = (error: any, operation: string, path: string) => {
+    const errInfo = {
+      error: error.message,
+      operationType: operation,
+      path,
+      authInfo: {
+        userId: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+        emailVerified: auth.currentUser?.emailVerified,
+        isAnonymous: auth.currentUser?.isAnonymous,
+      }
+    };
+    console.error('Firestore Error:', JSON.stringify(errInfo));
+    throw new Error(JSON.stringify(errInfo));
+  };
+
   const startCamera = async () => {
     setCameraError(null);
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setCameraError("Camera API not supported in this browser. Please use a modern browser like Chrome or Firefox.");
+        setCameraError("Camera API not supported in this browser. Please use a modern browser like Chrome or Firefox and ensure you are using HTTPS.");
         return;
-      }
-
-      // Check permission status if possible
-      if (navigator.permissions && (navigator.permissions as any).query) {
-        try {
-          const status = await (navigator.permissions as any).query({ name: 'camera' });
-          if (status.state === 'denied') {
-            setCameraError("Camera access is blocked by your browser. Please click the camera icon in your address bar to allow access.");
-            return;
-          }
-        } catch (e) {
-          // Ignore if permission query fails
-        }
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -155,7 +208,6 @@ export default function App() {
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        // Ensure video plays
         try {
           await videoRef.current.play();
         } catch (e) {
@@ -165,98 +217,216 @@ export default function App() {
     } catch (err: any) {
       console.error("Camera access denied:", err);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setCameraError("Camera permission denied. To fix this:\n1. Click the lock/camera icon in the address bar\n2. Change 'Camera' to 'Allow'\n3. Refresh the page or click 'Retry'");
+        setCameraError("Camera access was denied. Please click the camera icon in your browser's address bar to allow access for this site, then click 'Retry Access'.");
       } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        setCameraError("No camera device found. Please ensure your camera is connected.");
-      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-        setCameraError("Camera is already in use by another application.");
+        setCameraError("No camera found on this device. Please connect a camera and try again.");
       } else {
-        setCameraError(`Camera error: ${err.message || 'Unknown error'}`);
+        setCameraError(`Camera error: ${err.message || 'Unknown error'}. Please ensure no other application is using the camera.`);
       }
-    }
-  };
-
-  const fetchSuspects = async () => {
-    const res = await fetch('/api/suspects');
-    const data = await res.json();
-    setSuspects(data);
-  };
-
-  const handleSuspectSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const url = editingSuspect ? `/api/suspects/${editingSuspect.id}` : '/api/suspects';
-    const method = editingSuspect ? 'PUT' : 'POST';
-    
-    await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(suspectFormData)
-    });
-    
-    setShowSuspectModal(false);
-    setEditingSuspect(null);
-    setSuspectFormData({ name: '', risk_level: 'Low', category: 'Suspect', description: '', status: 'Active' });
-    fetchSuspects();
-  };
-
-  const handleDeleteSuspect = async (id: number) => {
-    if (window.confirm('Are you sure you want to delete this suspect?')) {
-      await fetch(`/api/suspects/${id}`, { method: 'DELETE' });
-      fetchSuspects();
     }
   };
 
   const handleSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const response = await fetch('https://formspree.io/f/mqeybvgr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(signupFormData)
+      await addDoc(collection(db, 'agent_signups'), {
+        ...signupFormData,
+        timestamp: serverTimestamp(),
+        status: 'pending'
       });
-      if (response.ok) {
-        setIsRegistered(true);
-        setTimeout(() => {
-          setIsRegistered(false);
-          setShowSignup(false);
-          setSignupFormData({ name: '', email: '', post: '', role: '' });
-        }, 3000);
-      }
-    } catch (err) {
-      console.error("Signup failed:", err);
+      alert('Application submitted successfully!');
+      setShowSignup(false);
+      setSignupFormData({ name: '', email: '', post: '', role: '' });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'agent_signups');
     }
   };
 
   const handleContactSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const response = await fetch('https://formspree.io/f/mqeybvgr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(contactFormData)
+      await addDoc(collection(db, 'contact_messages'), {
+        ...contactFormData,
+        timestamp: serverTimestamp()
       });
-      if (response.ok) {
-        alert('Message sent successfully!');
-        setShowContact(false);
-        setContactFormData({ name: '', email: '', message: '' });
-      }
-    } catch (err) {
-      console.error("Contact failed:", err);
+      alert('Message sent successfully!');
+      setShowContact(false);
+      setContactFormData({ name: '', email: '', message: '' });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'contact_messages');
     }
   };
 
-  // Fetch initial data
+  const handleSuspectSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      if (editingSuspect) {
+        await updateDoc(doc(db, 'suspects', editingSuspect.id), suspectFormData);
+      } else {
+        if (!user) return;
+        await addDoc(collection(db, 'suspects'), {
+          ...suspectFormData,
+          uid: user.uid
+        });
+      }
+      
+      setShowSuspectModal(false);
+      setEditingSuspect(null);
+      setSuspectFormData({ name: '', risk_level: 'Low', category: 'Suspect', description: '', status: 'Active' });
+    } catch (err) {
+      handleFirestoreError(err, 'write', 'suspects');
+    }
+  };
+
+  const handleDeleteSuspect = async (id: string) => {
+    if (window.confirm('Are you sure you want to delete this suspect?')) {
+      try {
+        await deleteDoc(doc(db, 'suspects', id));
+      } catch (err) {
+        handleFirestoreError(err, 'delete', `suspects/${id}`);
+      }
+    }
+  };
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err: any) {
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+        return;
+      }
+      
+      if (err.code === 'auth/unauthorized-domain') {
+        alert(`Login failed: This domain (${window.location.hostname}) is not authorized in the Firebase Console. 
+        
+Please add it to your Firebase project's "Authorized domains" list in the Authentication > Settings tab.`);
+      } else {
+        alert(`Login failed: ${err.message}`);
+      }
+      console.error("Login failed:", err);
+    }
+  };
+
+  const handleLogout = () => auth.signOut();
+
+  const seedSampleData = async () => {
+    try {
+      // Add Sample Suspects
+      const sampleSuspects = [
+        { name: 'Victor Vance', risk_level: 'High', category: 'Suspect', description: 'Wanted for high-stakes cyber espionage. Last seen near financial districts.', status: 'Active' },
+        { name: 'Elena Rossi', risk_level: 'Critical', category: 'Suspect', description: 'Expert in social engineering and infiltration. Multiple warrants across EU.', status: 'Active' },
+        { name: 'Marcus Thorne', risk_level: 'Medium', category: 'Person of Interest', description: 'Suspected link to underground smuggling rings. Surveillance recommended.', status: 'Active' }
+      ];
+
+      for (const s of sampleSuspects) {
+        await addDoc(collection(db, 'suspects'), {
+          ...s,
+          uid: user?.uid || null
+        });
+      }
+
+      // Add Sample Alerts
+      const sampleAlerts = [
+        { 
+          timestamp: serverTimestamp(), 
+          camera_id: 'CAM-04', 
+          location: 'North Perimeter', 
+          suspect_id: null, 
+          suspect_name: 'Victor Vance', 
+          risk_level: 'High', 
+          confidence: 0.92, 
+          behavior_flag: 'Unauthorized access attempt at Gate 4.', 
+          status: 'Active' 
+        },
+        { 
+          timestamp: serverTimestamp(), 
+          camera_id: 'CAM-01', 
+          location: 'Main Lobby', 
+          suspect_id: null, 
+          suspect_name: 'Elena Rossi', 
+          risk_level: 'Critical', 
+          confidence: 0.98, 
+          behavior_flag: 'Facial recognition match at reception desk.', 
+          status: 'Active' 
+        },
+        { 
+          timestamp: serverTimestamp(), 
+          camera_id: 'CAM-07', 
+          location: 'Server Room', 
+          suspect_id: null, 
+          suspect_name: 'Unknown', 
+          risk_level: 'Medium', 
+          confidence: 0.75, 
+          behavior_flag: 'Unusual heat signature detected near rack B-12.', 
+          status: 'Active' 
+        }
+      ];
+
+      for (const a of sampleAlerts) {
+        await addDoc(collection(db, 'alerts'), {
+          ...a,
+          uid: user?.uid || null
+        });
+      }
+
+      alert('Sample data seeded successfully!');
+    } catch (err) {
+      console.error("Error seeding data:", err);
+    }
+  };
+
+  // Auth Listener
   useEffect(() => {
-    fetch('/api/suspects').then(res => res.json()).then(setSuspects);
-    fetch('/api/alerts').then(res => res.json()).then(setAlerts);
-    
-    startCamera();
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
   }, []);
+
+  // Data Listeners
+  useEffect(() => {
+    if (!isAuthReady || !user) return;
+
+    const suspectsUnsubscribe = onSnapshot(collection(db, 'suspects'), 
+      (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Suspect));
+        setSuspects(data);
+        
+        // Seed initial data if empty
+        if (data.length === 0) {
+          const initialSuspects = [
+            { name: 'John Doe', risk_level: 'High', category: 'Suspect', description: 'Suspected of multiple bank robberies.', status: 'Active' },
+            { name: 'Jane Smith', risk_level: 'Critical', category: 'Suspect', description: 'Linked to organized crime.', status: 'Active' },
+            { name: 'Anjali Singh', risk_level: 'High', category: 'Suspect', description: 'Young woman, dark hair tied back, neutral expression, wearing a beige t-shirt.', status: 'Active' }
+          ];
+          initialSuspects.forEach(s => addDoc(collection(db, 'suspects'), { ...s, uid: user.uid }));
+        }
+      },
+      (err) => handleFirestoreError(err, 'list', 'suspects')
+    );
+
+    const alertsQuery = query(collection(db, 'alerts'), orderBy('timestamp', 'desc'), limit(50));
+    const alertsUnsubscribe = onSnapshot(alertsQuery, 
+      (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Alert));
+        setAlerts(data);
+      },
+      (err) => handleFirestoreError(err, 'list', 'alerts')
+    );
+
+    startCamera();
+
+    return () => {
+      suspectsUnsubscribe();
+      alertsUnsubscribe();
+    };
+  }, [isAuthReady, user]);
 
   // Analysis Loop
   useEffect(() => {
     let interval: any;
-    if (activeTab === 'dashboard') {
+    if (activeTab === 'dashboard' && user) {
       interval = setInterval(async () => {
         if (videoRef.current && canvasRef.current && !isAnalyzing) {
           const canvas = canvasRef.current;
@@ -274,21 +444,21 @@ export default function App() {
                 const locations = ['Main Entrance', 'North Corridor', 'Parking Lot B', 'Loading Dock', 'Server Room Hallway'];
                 const randomLocation = locations[Math.floor(Math.random() * locations.length)];
                 
+                const matchedSuspect = suspects.find(s => s.id === result.suspectId?.toString());
+
                 const newAlert = {
+                  timestamp: Timestamp.now(),
                   camera_id: `CAM-0${Math.floor(Math.random() * 5) + 1}`,
                   location: randomLocation,
-                  suspect_id: result.suspectId || null,
+                  suspect_id: result.suspectId?.toString() || null,
+                  suspect_name: matchedSuspect?.name || null,
+                  risk_level: matchedSuspect?.risk_level || (result.isSuspicious ? 'Medium' : 'Low'),
                   confidence: result.confidence,
-                  behavior_flag: result.behavior
+                  behavior_flag: result.behavior,
+                  status: 'Pending'
                 };
                 
-                await fetch('/api/alerts', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(newAlert)
-                });
-                const updatedAlerts = await fetch('/api/alerts').then(res => res.json());
-                setAlerts(updatedAlerts);
+                await addDoc(collection(db, 'alerts'), newAlert);
               }
             } catch (err) {
               console.error("Analysis failed:", err);
@@ -297,10 +467,10 @@ export default function App() {
             }
           }
         }
-      }, 5000); // Analyze every 5 seconds
+      }, 5000);
     }
     return () => clearInterval(interval);
-  }, [activeTab, suspects, isAnalyzing]);
+  }, [activeTab, suspects, isAnalyzing, user]);
 
   // Draw Overlays (Blurring/Boxes)
   useEffect(() => {
@@ -347,19 +517,34 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 rounded-full border border-zinc-800">
-            <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-            <span className="text-xs font-medium text-zinc-400">SYSTEM ONLINE</span>
+          <div className="flex items-center gap-4">
+            {user ? (
+              <>
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 rounded-full border border-zinc-800">
+                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                  <span className="text-xs font-medium text-zinc-400">SYSTEM ONLINE</span>
+                </div>
+                <button 
+                  onClick={handleLogout}
+                  className="p-2 text-zinc-400 hover:text-zinc-100 transition-colors flex items-center gap-2"
+                  title="Logout"
+                >
+                  <LogOut size={20} />
+                </button>
+                <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-xs font-bold overflow-hidden">
+                  {user.photoURL ? <img src={user.photoURL} alt="" /> : user.email?.charAt(0).toUpperCase()}
+                </div>
+              </>
+            ) : (
+              <button 
+                onClick={handleLogin}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-500 text-zinc-950 rounded-lg font-bold text-sm hover:bg-emerald-400 transition-all"
+              >
+                <LogIn size={18} />
+                Login
+              </button>
+            )}
           </div>
-          <button className="p-2 text-zinc-400 hover:text-zinc-100 transition-colors relative">
-            <Bell size={20} />
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-zinc-950" />
-          </button>
-          <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-xs font-bold">
-            JD
-          </div>
-        </div>
       </header>
 
       <div className="flex">
@@ -379,7 +564,7 @@ export default function App() {
           <SidebarItem icon={Smartphone} label="Mobile Link" active={activeTab === 'mobile'} onClick={() => setActiveTab('mobile')} />
           <SidebarItem icon={Mail} label="Contact Us" onClick={() => setShowContact(true)} />
           <SidebarItem icon={UserPlus} label="Agent Signup" onClick={() => setShowSignup(true)} />
-          <SidebarItem icon={Settings} label="Configuration" onClick={() => {}} />
+          <SidebarItem icon={Settings} label="Seed Sample Data" onClick={seedSampleData} />
           
           <div className="mt-auto p-4 bg-zinc-900/50 rounded-xl border border-zinc-800">
             <div className="flex items-center gap-2 mb-2">
@@ -541,7 +726,9 @@ export default function App() {
                         >
                           <div className="flex justify-between items-start mb-2">
                             <StatusBadge level={alert.risk_level || 'Low'} />
-                            <span className="text-[10px] font-mono text-zinc-500">{new Date(alert.timestamp).toLocaleTimeString()}</span>
+                            <span className="text-[10px] font-mono text-zinc-500">
+                              {alert.timestamp instanceof Timestamp ? alert.timestamp.toDate().toLocaleTimeString() : new Date(alert.timestamp).toLocaleTimeString()}
+                            </span>
                           </div>
                           <h3 className="text-sm font-bold text-zinc-100 mb-1">
                             {alert.suspect_name ? `MATCH: ${alert.suspect_name}` : 'SUSPICIOUS BEHAVIOR'}
@@ -568,6 +755,186 @@ export default function App() {
                         </div>
                       )}
                     </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'alerts' && (
+              <motion.div 
+                key="alerts"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                className="space-y-6"
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold tracking-tight text-zinc-100">Alert History</h2>
+                    <p className="text-sm text-zinc-500 font-medium">Comprehensive log of all security incidents and AI detections.</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button className="px-4 py-2 bg-zinc-800 text-zinc-300 rounded-lg text-xs font-bold border border-zinc-700 hover:bg-zinc-700 transition-all">Export Log</button>
+                    <button className="px-4 py-2 bg-zinc-800 text-zinc-300 rounded-lg text-xs font-bold border border-zinc-700 hover:bg-zinc-700 transition-all">Clear History</button>
+                  </div>
+                </div>
+
+                <div className="bg-zinc-900/50 rounded-2xl border border-zinc-800 overflow-hidden">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-zinc-950/50 border-b border-zinc-800">
+                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Timestamp</th>
+                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Incident</th>
+                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Source</th>
+                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Risk</th>
+                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Confidence</th>
+                        <th className="px-6 py-4 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-800">
+                      {alerts.map((alert) => (
+                        <tr key={alert.id} className="hover:bg-zinc-800/30 transition-colors group">
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="flex flex-col">
+                              <span className="text-xs font-mono text-zinc-300">
+                                {alert.timestamp instanceof Timestamp ? alert.timestamp.toDate().toLocaleDateString() : new Date(alert.timestamp).toLocaleDateString()}
+                              </span>
+                              <span className="text-[10px] font-mono text-zinc-500">
+                                {alert.timestamp instanceof Timestamp ? alert.timestamp.toDate().toLocaleTimeString() : new Date(alert.timestamp).toLocaleTimeString()}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex flex-col">
+                              <span className="text-sm font-bold text-zinc-100">{alert.suspect_name || 'Unknown Subject'}</span>
+                              <span className="text-[10px] text-zinc-500 line-clamp-1">{alert.behavior_flag}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              <Camera size={12} className="text-zinc-500" />
+                              <span className="text-xs text-zinc-400">{alert.camera_id}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <StatusBadge level={alert.risk_level || 'Low'} />
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              <div className="w-12 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                                <div className="h-full bg-emerald-500" style={{ width: `${alert.confidence * 100}%` }} />
+                              </div>
+                              <span className="text-[10px] font-bold text-zinc-400">{Math.round(alert.confidence * 100)}%</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded text-[10px] font-bold uppercase">
+                              {alert.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {alerts.length === 0 && (
+                    <div className="py-20 flex flex-col items-center gap-4 text-zinc-600">
+                      <History size={48} />
+                      <p className="text-sm font-medium">No historical records found</p>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'map' && (
+              <motion.div 
+                key="map"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="h-full flex flex-col gap-6"
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold tracking-tight text-zinc-100">Tactical Map</h2>
+                    <p className="text-sm text-zinc-500 font-medium">Real-time spatial awareness and unit positioning.</p>
+                  </div>
+                  <div className="flex items-center gap-4 bg-zinc-900/50 p-2 rounded-lg border border-zinc-800">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 bg-emerald-500 rounded-full" />
+                      <span className="text-[10px] font-bold text-zinc-400 uppercase">Cameras</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 bg-blue-500 rounded-full" />
+                      <span className="text-[10px] font-bold text-zinc-400 uppercase">Units</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                      <span className="text-[10px] font-bold text-zinc-400 uppercase">Alerts</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex-1 bg-zinc-950 rounded-3xl border border-zinc-800 relative overflow-hidden shadow-inner group">
+                  {/* Grid Background */}
+                  <div className="absolute inset-0 opacity-20" 
+                    style={{ 
+                      backgroundImage: 'radial-gradient(circle, #3f3f46 1px, transparent 1px)', 
+                      backgroundSize: '40px 40px' 
+                    }} 
+                  />
+                  
+                  {/* Map Content (Stylized Floor Plan) */}
+                  <div className="absolute inset-12 border-2 border-zinc-800/50 rounded-2xl pointer-events-none">
+                    <div className="absolute top-0 left-1/3 bottom-0 w-1 bg-zinc-800/30" />
+                    <div className="absolute top-1/2 left-0 right-0 h-1 bg-zinc-800/30" />
+                    <div className="absolute top-1/4 left-1/3 right-0 h-1 bg-zinc-800/30" />
+                  </div>
+
+                  {/* Sample Map Points */}
+                  {[
+                    { id: 'c1', x: 20, y: 30, type: 'camera', label: 'CAM-01', status: 'active' },
+                    { id: 'c2', x: 80, y: 20, type: 'camera', label: 'CAM-02', status: 'active' },
+                    { id: 'c3', x: 50, y: 70, type: 'camera', label: 'CAM-03', status: 'idle' },
+                    { id: 'u1', x: 35, y: 45, type: 'unit', label: 'UNIT-101', status: 'active' },
+                    { id: 'u2', x: 65, y: 85, type: 'unit', label: 'UNIT-104', status: 'active' },
+                    { id: 'a1', x: 75, y: 25, type: 'alert', label: 'INTRUSION', status: 'critical' },
+                  ].map((point) => (
+                    <motion.div
+                      key={point.id}
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      className="absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer group/point"
+                      style={{ left: `${point.x}%`, top: `${point.y}%` }}
+                    >
+                      <div className={`w-4 h-4 rounded-full border-2 border-zinc-950 shadow-lg transition-all ${
+                        point.type === 'camera' ? 'bg-emerald-500' : 
+                        point.type === 'unit' ? 'bg-blue-500' : 
+                        'bg-red-500 animate-pulse'
+                      }`} />
+                      
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 opacity-0 group-hover/point:opacity-100 transition-opacity whitespace-nowrap z-20">
+                        <div className="bg-zinc-900 border border-zinc-700 px-2 py-1 rounded text-[10px] font-bold text-zinc-100 shadow-xl">
+                          {point.label}
+                        </div>
+                      </div>
+                    </motion.div>
+                  ))}
+
+                  {/* Map HUD */}
+                  <div className="absolute bottom-6 left-6 flex flex-col gap-1">
+                    <span className="text-[10px] font-mono text-zinc-500">LAT: 40.7128° N</span>
+                    <span className="text-[10px] font-mono text-zinc-500">LNG: 74.0060° W</span>
+                    <span className="text-[10px] font-mono text-zinc-500">ALT: 12.4m</span>
+                  </div>
+
+                  <div className="absolute top-6 right-6 flex flex-col gap-2">
+                    <button className="p-2 bg-zinc-900/80 backdrop-blur-md border border-zinc-700 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors">
+                      <Plus size={16} />
+                    </button>
+                    <button className="p-2 bg-zinc-900/80 backdrop-blur-md border border-zinc-700 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors">
+                      <Minus size={16} />
+                    </button>
                   </div>
                 </div>
               </motion.div>
@@ -749,16 +1116,16 @@ export default function App() {
 
       {/* Footer / System Status */}
       <footer className="h-8 border-t border-zinc-800 bg-zinc-950 px-6 flex items-center justify-between text-[10px] font-mono text-zinc-500">
-        <div className="flex gap-6">
-          <div className="flex items-center gap-2">
-            <Database size={12} />
-            <span>DB: surveillance.db [CONNECTED]</span>
+          <div className="flex gap-6">
+            <div className="flex items-center gap-2">
+              <Database size={12} />
+              <span>DB: Cloud Firestore [CONNECTED]</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Lock size={12} />
+              <span>ENCRYPTION: SSL/TLS [ACTIVE]</span>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Lock size={12} />
-            <span>ENCRYPTION: AES-256 [ACTIVE]</span>
-          </div>
-        </div>
         <div className="flex items-center gap-4">
           <span>UPTIME: 142:12:05</span>
           <div className="flex items-center gap-1">

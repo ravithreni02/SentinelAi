@@ -4,7 +4,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export interface AnalysisResult {
   isSuspectMatch: boolean;
-  suspectId?: number;
+  suspectId?: string;
   confidence: number;
   behavior: string;
   isSuspicious: boolean;
@@ -24,7 +24,7 @@ export async function analyzeFrame(base64Image: string, suspects: any[]): Promis
 
     Tasks:
     1. Identify any faces in the image.
-    2. Compare each face against the suspect database descriptions. If a face matches a description (e.g., "Young woman, dark hair tied back, neutral expression, wearing a beige t-shirt"), set isSuspectMatch to true and provide the suspectId.
+    2. Compare each face against the suspect database descriptions. If a face matches a description (e.g., "Young woman, dark hair tied back, neutral expression, wearing a beige t-shirt"), set isSuspectMatch to true and provide the suspectId (the ID string from the database).
     3. Detect suspicious behaviors (loitering, running, abandoned objects, aggressive gestures, unauthorized entry).
     4. Detect objects (bags, weapons, vehicles, electronics).
     5. Return coordinates for all detected faces for privacy blurring.
@@ -54,7 +54,7 @@ export async function analyzeFrame(base64Image: string, suspects: any[]): Promis
           type: Type.OBJECT,
           properties: {
             isSuspectMatch: { type: Type.BOOLEAN },
-            suspectId: { type: Type.INTEGER },
+            suspectId: { type: Type.STRING },
             confidence: { type: Type.NUMBER },
             behavior: { type: Type.STRING },
             isSuspicious: { type: Type.BOOLEAN },
