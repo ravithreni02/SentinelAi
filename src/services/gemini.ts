@@ -1,22 +1,52 @@
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-
-export interface AnalysisResult {
-  isSuspectMatch: boolean;
-  suspectId?: string;
-  confidence: number;
-  behavior: string;
-  isSuspicious: boolean;
-  detectedObjects: string[];
-  faces: { x: number; y: number; w: number; h: number; isSuspect: boolean }[];
-}
+const getApiKey = () => {
+  // Try various common ways the key might be injected or defined
+  return (
+    (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : null) ||
+    (import.meta.env?.VITE_GEMINI_API_KEY) ||
+    ""
+  );
+};
 
 export async function analyzeFrame(base64Image: string, suspects: any[]): Promise<AnalysisResult> {
+  const apiKey = getApiKey();
+  
+  if (!apiKey) {
+    return {
+      isSuspectMatch: false,
+      confidence: 0,
+      behavior: "API Key Missing. Please set GEMINI_API_KEY in environment variables.",
+      isSuspicious: false,
+      detectedObjects: [],
+      faces: []
+    };
+  }
+
+  if (!base64Image || base64Image.length < 100) {
+    return {
+      isSuspectMatch: false,
+      confidence: 0,
+      behavior: "No image data captured.",
+      isSuspicious: false,
+      detectedObjects: [],
+      faces: []
+    };
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
   const model = "gemini-3-flash-preview";
   
+  // Limit suspects to top 10 to avoid exceeding request size limits
+  const relevantSuspects = suspects
+    .sort((a, b) => {
+      const riskOrder = { 'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3 };
+      return (riskOrder[a.risk_level as keyof typeof riskOrder] || 4) - (riskOrder[b.risk_level as keyof typeof riskOrder] || 4);
+    })
+    .slice(0, 10);
+
   let imagePartIndex = 2;
-  const suspectContext = suspects.map((s) => {
+  const suspectContext = relevantSuspects.map((s) => {
     let ctx = `ID: ${s.id}, Name: ${s.name}, Category: ${s.category}, Description: ${s.description}, Risk: ${s.risk_level}`;
     if (s.image_data) {
       ctx += ` (Reference Image provided as Image Part ${imagePartIndex++})`;
@@ -40,6 +70,8 @@ export async function analyzeFrame(base64Image: string, suspects: any[]): Promis
   `;
 
   try {
+    const imageData = base64Image.includes(",") ? base64Image.split(",")[1] : base64Image;
+    
     const contents = [
       {
         parts: [
@@ -47,16 +79,18 @@ export async function analyzeFrame(base64Image: string, suspects: any[]): Promis
           {
             inlineData: {
               mimeType: "image/jpeg",
-              data: base64Image.split(",")[1] || base64Image
+              data: imageData
             }
           },
-          ...suspects.map(s => {
+          ...relevantSuspects.map(s => {
             if (!s.image_data) return null;
             try {
+              const data = s.image_data.includes(",") ? s.image_data.split(",")[1] : s.image_data;
+              const mimeType = s.image_data.includes(";") ? s.image_data.split(";")[0].split(":")[1] : "image/jpeg";
               return {
                 inlineData: {
-                  mimeType: s.image_data.split(";")[0].split(":")[1] || "image/jpeg",
-                  data: s.image_data.split(",")[1] || s.image_data
+                  mimeType: mimeType || "image/jpeg",
+                  data: data
                 }
               };
             } catch (e) {
@@ -104,12 +138,22 @@ export async function analyzeFrame(base64Image: string, suspects: any[]): Promis
     });
 
     return JSON.parse(response.text || "{}");
-  } catch (error) {
+  } catch (error: any) {
     console.error("Gemini Analysis Error:", error);
+    let errorMessage = "Analysis failed";
+    
+    if (error.message?.includes("API key not valid")) {
+      errorMessage = "Invalid API Key. Please check your Gemini API settings.";
+    } else if (error.message?.includes("quota")) {
+      errorMessage = "API Quota exceeded. Please try again later.";
+    } else if (error.message?.includes("Safety")) {
+      errorMessage = "Analysis blocked by safety filters.";
+    }
+    
     return {
       isSuspectMatch: false,
       confidence: 0,
-      behavior: "Analysis failed",
+      behavior: errorMessage,
       isSuspicious: false,
       detectedObjects: [],
       faces: []

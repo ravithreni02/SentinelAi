@@ -442,6 +442,12 @@ Please add it to your Firebase project's "Authorized domains" list in the Authen
   useEffect(() => {
     const runAnalysis = async () => {
       if (activeTab === 'dashboard' && user && videoRef.current && canvasRef.current && !isAnalyzing) {
+        // Ensure video is actually playing and has dimensions
+        if (videoRef.current.readyState < 2 || videoRef.current.videoWidth === 0) {
+          analysisTimeoutRef.current = setTimeout(runAnalysis, 1000);
+          return;
+        }
+
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d');
         if (context) {
@@ -708,9 +714,11 @@ Please add it to your Firebase project's "Authorized domains" list in the Authen
 
                   {/* Analysis Info */}
                   <div className="grid grid-cols-3 gap-4">
-                    <div className="p-4 bg-zinc-900/50 rounded-xl border border-zinc-800">
+                    <div className={`p-4 rounded-xl border ${lastAnalysis?.behavior.includes('API Key') || lastAnalysis?.behavior.includes('failed') ? 'bg-red-500/10 border-red-500/20' : 'bg-zinc-900/50 border-zinc-800'}`}>
                       <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Behavior Detection</p>
-                      <p className="text-sm font-medium text-zinc-200">{lastAnalysis?.behavior || 'Monitoring...'}</p>
+                      <p className={`text-sm font-medium ${lastAnalysis?.behavior.includes('API Key') ? 'text-red-400' : 'text-zinc-200'}`}>
+                        {lastAnalysis?.behavior || 'Monitoring...'}
+                      </p>
                     </div>
                     <div className="p-4 bg-zinc-900/50 rounded-xl border border-zinc-800">
                       <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Object Classification</p>
