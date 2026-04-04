@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
@@ -25,23 +25,18 @@ export async function analyzeFrame(base64Image: string, suspects: any[]): Promis
   }).join("\n");
 
   const prompt = `
-    Analyze this surveillance camera frame (Image Part 1) with extreme precision and strict adherence to the suspect database.
+    Analyze the surveillance frame (Image Part 1) against the suspect database.
     
-    Current Suspect Database (Profiles to match against):
+    Suspect Database:
     ${suspectContext}
 
-    CRITICAL INSTRUCTIONS:
-    1. Identify all faces in Image Part 1 (the live frame).
-    2. For EACH face in Image Part 1, compare it meticulously against the suspect database descriptions AND their reference images (if provided in subsequent Image Parts).
-    3. ONLY set isSuspectMatch to true if there is a HIGH-CONFIDENCE visual match (above 85% similarity) between a detected face in Image Part 1 and a suspect in the database.
-    4. If there are NO faces in Image Part 1, or if none of the faces match a suspect, isSuspectMatch MUST be false and suspectId MUST be null.
-    5. DO NOT hallucinate matches. If you are unsure, mark isSuspectMatch as false.
-    6. Detect suspicious behaviors (loitering, running, abandoned objects, aggressive gestures, unauthorized entry).
-    7. Detect objects (bags, weapons, vehicles, electronics).
-    8. Return coordinates [x, y, w, h] for all detected faces in Image Part 1 (normalized 0-1000).
-    9. For each face in the 'faces' array, set 'isSuspect' to true ONLY if that specific face matches a suspect.
-
-    Return the analysis in the specified JSON format. Accuracy is more important than finding a match.
+    Instructions:
+    1. Detect all faces in Image Part 1.
+    2. Compare each face against the database descriptions and reference images.
+    3. Set 'isSuspectMatch' to true ONLY if there is a high-confidence visual match (>85%).
+    4. Detect suspicious behaviors (loitering, running, weapons, unauthorized entry).
+    5. Return coordinates [x, y, w, h] (0-1000) for all faces.
+    6. Return JSON format.
   `;
 
   try {
@@ -76,6 +71,8 @@ export async function analyzeFrame(base64Image: string, suspects: any[]): Promis
       model,
       contents,
       config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        systemInstruction: "You are a high-speed surveillance analysis AI. Focus on accuracy and speed. Minimize reasoning, maximize detection precision.",
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,

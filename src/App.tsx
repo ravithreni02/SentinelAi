@@ -437,38 +437,35 @@ Please add it to your Firebase project's "Authorized domains" list in the Authen
   }, [isAuthReady, user]);
 
   // Analysis Loop
+  const analysisTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
-    let interval: any;
-    if (activeTab === 'dashboard' && user) {
-      interval = setInterval(async () => {
-        if (videoRef.current && canvasRef.current && !isAnalyzing) {
-          const canvas = canvasRef.current;
-          const context = canvas.getContext('2d');
-          if (context) {
-            context.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-            const base64 = canvas.toDataURL('image/jpeg', 0.8);
+    const runAnalysis = async () => {
+      if (activeTab === 'dashboard' && user && videoRef.current && canvasRef.current && !isAnalyzing) {
+        const canvas = canvasRef.current;
+        const context = canvas.getContext('2d');
+        if (context) {
+          // Downscale for faster analysis (640x360 is usually enough for Gemini)
+          context.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+          const base64 = canvas.toDataURL('image/jpeg', 0.6); // Slightly lower quality for speed
+          
+          setIsAnalyzing(true);
+          try {
+            const result = await analyzeFrame(base64, suspects);
             
-            setIsAnalyzing(true);
-            try {
-              const result = await analyzeFrame(base64, suspects);
-              
-              // Sanity check: If no faces are detected, it cannot be a suspect match
-              if (result.faces.length === 0) {
-                result.isSuspectMatch = false;
-                result.suspectId = undefined;
-              }
-              
-              setLastAnalysis(result);
+            if (result.faces.length === 0) {
+              result.isSuspectMatch = false;
+              result.suspectId = undefined;
+            }
+            
+            setLastAnalysis(result);
 
-              if (result.isSuspectMatch || result.isSuspicious) {
-                const matchedSuspect = suspects.find(s => s.id === result.suspectId?.toString());
-                
-                // Only create a match alert if the suspect actually exists in our database
-                if (result.isSuspectMatch && !matchedSuspect) {
-                  console.warn("AI reported a suspect match but the ID was not found in the database:", result.suspectId);
-                  return;
-                }
-
+            if (result.isSuspectMatch || result.isSuspicious) {
+              const matchedSuspect = suspects.find(s => s.id === result.suspectId?.toString());
+              
+              if (result.isSuspectMatch && !matchedSuspect) {
+                console.warn("AI reported a suspect match but the ID was not found in the database:", result.suspectId);
+              } else {
                 const locations = ['Main Entrance', 'North Corridor', 'Parking Lot B', 'Loading Dock', 'Server Room Hallway'];
                 const randomLocation = locations[Math.floor(Math.random() * locations.length)];
                 
@@ -486,17 +483,28 @@ Please add it to your Firebase project's "Authorized domains" list in the Authen
                 
                 await addDoc(collection(db, 'alerts'), newAlert);
               }
-            } catch (err) {
-              console.error("Analysis failed:", err);
-            } finally {
-              setIsAnalyzing(false);
             }
+          } catch (err) {
+            console.error("Analysis failed:", err);
+          } finally {
+            setIsAnalyzing(false);
           }
         }
-      }, 5000);
+      }
+      // Schedule next run
+      analysisTimeoutRef.current = setTimeout(runAnalysis, 3000);
+    };
+
+    if (activeTab === 'dashboard' && user) {
+      runAnalysis();
     }
-    return () => clearInterval(interval);
-  }, [activeTab, suspects, isAnalyzing, user]);
+
+    return () => {
+      if (analysisTimeoutRef.current) {
+        clearTimeout(analysisTimeoutRef.current);
+      }
+    };
+  }, [activeTab, user, suspects]); // Removed isAnalyzing from dependencies to avoid loop restarts
 
   // Draw Overlays (Blurring/Boxes)
   useEffect(() => {
@@ -658,7 +666,7 @@ Please add it to your Firebase project's "Authorized domains" list in the Authen
                         className="w-full h-full object-cover grayscale brightness-75"
                       />
                     )}
-                    <canvas ref={canvasRef} className="hidden" width={1280} height={720} />
+                    <canvas ref={canvasRef} className="hidden" width={640} height={360} />
                     <canvas 
                       ref={overlayCanvasRef} 
                       className="absolute top-0 left-0 w-full h-full pointer-events-none" 
